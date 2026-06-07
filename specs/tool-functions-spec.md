@@ -70,7 +70,13 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *Aliases are stored as a list of strings. How will you check if the normalized input matches any alias in the list? Write your approach in pseudocode or plain English.*
 
 ```
-[your answer here]
+It's best to build a normalized lookup dictionary once, mapping every possible name variant. Then, the query should be normalized before looking it up. 
+
+For example, we will have a "normalize()" method that will strip extra whitespaces and convert the query/names to lowercase. Then, we will pre-build a name_index dictionary (hashmap) that normalizes all display names, scientific names, and aliases. Then, find_plant would find the plants from the normalized pre-built hashmap. Since there are 3 sources of names for each name total, they collapse into a flat dictionary and matching will take O(1) instead of nested loops.
+
+The benefit of this approach is that we build the dictionary once and we reuse it for every query. 
+
+We will also compute close matches in case there was a spelling error in the query using difflib.
 ```
 
 ---
@@ -80,7 +86,11 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *When a plant isn't found, the agent will read your message and use it to decide what to tell the user. Write the exact string you'll return — make it useful to the agent, not just to a human reading logs.*
 
 ```
-[your answer here]
+"There is no exact match in the database for {plant_name}. 
+
+{if len(closest_matches) != 0} This may be a spelling error. The closest matches in the database: {closest_matches}. Ask the user if they meant one of these before answering.
+
+{else} Avaliable plants: {avaliable_plants}. Tell the user this plant is not in the database, suggest one of the available plants, and offer general care advice if appropriate, but do not invent plant-specific care details."
 ```
 
 ---
@@ -91,17 +101,22 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 
 **Test: does `"devil's ivy"` return the pothos entry?**
 ```
-[yes / no — if no, describe what happened]
+yes
 ```
 
 **Test: does `"SNAKE PLANT"` return the snake plant entry?**
 ```
-[yes / no — if no, describe what happened]
+yes
 ```
 
 **One edge case you discovered while implementing:**
 ```
-[your answer here]
+Alias collisions. Because all name variants collapse into one flat hashmap
+(_NAME_INDEX), if two plants share an alias the later-registered plant silently
+overwrites the earlier one — the lookup still returns O(1), but for the "wrong"
+plant with no error. Current data has no collisions, so it's not a live bug, but
+it's a risk as the database grows. A guard in _build_name_index that detects a
+key already mapped to a different slug would surface it early.
 ```
 
 ---

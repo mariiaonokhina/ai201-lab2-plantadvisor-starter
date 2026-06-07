@@ -2,11 +2,34 @@ import json
 import os
 from datetime import datetime
 from config import DATA_PATH
+import difflib  # For close matching
+
+# Function to normalize strings for matching by converting to lowercase
+# and stripping whitespace 
+def _normalize(s: str) -> str:
+    return s.strip().lower()
 
 # Plant database and seasonal data are loaded once at module load.
 # This mirrors how a real service would cache its data source in memory.
 with open(os.path.join(DATA_PATH, "plants.json"), encoding="utf-8") as f:
     _plant_db = json.load(f)
+
+# The name index dictionary is built once and reused for every query.
+# For each plant, register the slug, the slug with underscores→spaces, 
+# the display_name, the scientific_name, and every alias
+def _build_name_index(plant_db: dict) -> dict:
+    index = {}
+    for slug, data in plant_db.items():
+        index[_normalize(slug)] = slug
+        index[_normalize(slug.replace("_", " "))] = slug
+        index[_normalize(data["display_name"])] = slug
+        if "scientific_name" in data:
+            index[_normalize(data["scientific_name"])] = slug
+        for alias in data.get("aliases", []):
+            index[_normalize(alias)] = slug
+    return index
+
+_NAME_INDEX = _build_name_index(_plant_db)
 
 with open(os.path.join(DATA_PATH, "seasons.json"), encoding="utf-8") as f:
     _season_data = json.load(f)
@@ -24,39 +47,52 @@ def lookup_plant(plant_name: str) -> dict:
     """
     Search the plant database for a plant by name and return its care information.
 
-    TODO — Milestone 1:
-
-    Right now this always returns a "not found" response. Your job is to implement
-    the search logic so it can actually find plants.
-
     The plant database (_plant_db) is a dict where keys are lowercase slugs like
     "pothos", "snake_plant", "fiddle_leaf_fig". Each plant also has a "display_name"
     field and an "aliases" list with common alternate names.
 
-    Your implementation should handle all three:
-      1. Direct key match (e.g., "pothos" → finds "pothos")
-      2. Display name match (e.g., "Pothos" → finds "pothos")
-      3. Alias match (e.g., "devil's ivy" → finds "pothos")
-
-    All matching should be case-insensitive. Strip whitespace from the input.
+    All matching is case-insensitive. Stripped whitespace from the input.
 
     Return format when found:
       {"found": True, "plant": <the full plant dict>}
 
     Return format when not found:
       {"found": False, "name": <original input>, "message": <helpful string>}
-
-    The message in the not-found case matters — the agent will use it to decide
-    what to tell the user. Your spec has a dedicated field for this — think about
-    what information would actually be helpful to the agent.
-
-    Before writing code, complete the lookup_plant section of specs/tool-functions-spec.md.
     """
-    return {
-        "found": False,
-        "name": plant_name,
-        "message": "Plant lookup not yet implemented. Complete Milestone 1.",
-    }
+    normalized = _normalize(plant_name)
+
+    # O(1) lookup across keys, display names, scientific names, and aliases
+    slug = _NAME_INDEX.get(normalized)
+    if slug is not None:
+        return {"found": True, "plant": _plant_db[slug]}
+
+    # Not found — compute close matches in case of a spelling error
+    closest_keys = difflib.get_close_matches(
+        normalized, _NAME_INDEX.keys(), n=3, cutoff=0.6
+    )
+    # Map matched index keys back to display names (dedup, preserve order)
+    closest_matches = list(dict.fromkeys(
+        _plant_db[_NAME_INDEX[k]]["display_name"] for k in closest_keys
+    ))
+    available_plants = sorted(
+        data["display_name"] for data in _plant_db.values()
+    )
+
+    if closest_matches:
+        message = (
+            f"There is no exact match in the database for {plant_name}. "
+            f"This may be a spelling error. The closest matches in the database: "
+            f"{closest_matches}. Ask the user if they meant one of these before answering."
+        )
+    else:
+        message = (
+            f"There is no exact match in the database for {plant_name}. "
+            f"Available plants: {available_plants}. Tell the user this plant is not "
+            f"in the database, suggest one of the available plants, and offer general "
+            f"care advice if appropriate, but do not invent plant-specific care details."
+        )
+
+    return {"found": False, "name": plant_name, "message": message}
 
 
 def get_seasonal_conditions(season: str | None = None) -> dict:
