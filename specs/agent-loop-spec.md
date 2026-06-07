@@ -122,7 +122,18 @@ for tool_call in assistant_message.tool_calls:
 *The loop should stop when: (a) the LLM returns a response with no tool calls, OR (b) the MAX_TOOL_ROUNDS limit is reached. Describe how you will detect each condition and what you will return in each case.*
 
 ```
-[your answer here]
+(a) No tool calls — final answer:
+    assistant_message = response.choices[0].message
+    if not assistant_message.tool_calls:
+        return assistant_message.content or FALLBACK_MESSAGE
+    (coalesce because content can be None/empty — contract says never return empty)
+
+(b) Round limit reached:
+    Wrap the whole thing in `for round in range(MAX_TOOL_ROUNDS):` so the COUNT OF
+    ROUNDS is what's bounded — not len(tool_calls), which is tools-per-response and
+    unrelated. If the loop finishes without returning, return an explicit fallback
+    string (the last assistant message's content is None because it was a tool-call
+    message, so we can't return that).
 ```
 
 ---
@@ -132,7 +143,12 @@ for tool_call in assistant_message.tool_calls:
 *Once the loop exits because there are no more tool calls, how do you extract the text content from the response object? What field holds the string you should return?*
 
 ```
-[your answer here]
+The final text is at response.choices[0].message.content, so the `content`
+attribute of the assistant message (the same `assistant_message` used to check
+tool_calls). Since `content` can be None/empty (it's None on tool-call messages,
+and can be empty even on a final one), return `assistant_message.content or
+FALLBACK_MESSAGE` to honor the "never empty" contract. This extraction is exactly
+branch (a) of the termination logic, when tool_calls is falsy, return the content.
 ```
 
 ---
@@ -144,20 +160,17 @@ for tool_call in assistant_message.tool_calls:
 **Trace of a working agent turn (what tools were called and in what order):**
 
 ```
-Query: "How should I care for my calathea?"
-Round 1 tool call: [tool name, args]
-Round 2 tool call: [tool name, args] (if any)
-Final response: [brief description]
+When the user asked how to care for a calathea, the agent first called lookup_plant("calathea") and found the plant in the database. Using that information, it answered with care instructions and did not need any additional tool calls.
 ```
 
 **What happens when you ask about a plant that isn't in the database?**
 
 ```
-[describe the behavior you observed]
+If a plant is not found, the tool returns a message saying so and may suggest similar plants. The agent then tells the user the plant is not in the database and avoids making up plant-specific care information.
 ```
 
 **One thing about the tool call API that surprised you:**
 
 ```
-[your answer here]
+For tools with no required inputs, the model sometimes sends null instead of an empty object {}. This caused errors in the code, so I had to add a check to ensure a dictionary is always passed to the tool.
 ```

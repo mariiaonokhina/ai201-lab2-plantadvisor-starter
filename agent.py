@@ -1,4 +1,5 @@
 import json
+from pyexpat.errors import messages
 from groq import Groq
 from config import GROQ_API_KEY, LLM_MODEL, MAX_TOOL_ROUNDS
 from tools import lookup_plant, get_seasonal_conditions
@@ -75,6 +76,11 @@ SYSTEM_PROMPT = (
     "when you have it (e.g., 'According to the care data for your monstera...')."
 )
 
+FALLBACK_MESSAGE = (
+    "Sorry, I had trouble putting together an answer just now. "
+    "Could you rephrase or try again?"
+)
+
 # ──────────────────────────────────────────────
 # Tool dispatch
 #
@@ -104,12 +110,6 @@ def run_agent(user_message: str, history: list) -> str:
     """
     Run the plant care agent for one user turn and return its response.
 
-    TODO — Milestone 2:
-
-    The agent loop follows a specific pattern that you'll implement here. Read
-    specs/agent-loop-spec.md carefully before writing any code — understand the
-    full loop before implementing any part of it.
-
     The loop works like this:
       1. Build a messages list: system prompt + conversation history + new user message
       2. Call the LLM with messages and TOOL_DEFINITIONS
@@ -119,13 +119,56 @@ def run_agent(user_message: str, history: list) -> str:
            c. Call the LLM again with the updated messages
            d. Repeat until no more tool_calls (or MAX_TOOL_ROUNDS is reached)
       4. Return the final text response
-
-    Key details to get right:
-      - The assistant message must be appended BEFORE tool results
-      - Tool result messages use role="tool" with a tool_call_id field
-      - Append the assistant's message object directly (not just its content)
-      - The history format from Gradio: list of [user_message, assistant_message] pairs
-
-    Before writing code, complete specs/agent-loop-spec.md.
     """
-    return "🌱 Agent not yet implemented. Complete Milestone 2 to activate the Plant Advisor."
+    try:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for turn in history:
+            if isinstance(turn, dict):
+                # Gradio "messages" format: {"role": ..., "content": ...}
+                messages.append({"role": turn["role"], "content": turn["content"]})
+            else:
+                # Gradio "tuples" format: [user_msg, assistant_msg]
+                user_msg, assistant_msg = turn
+                messages.append({"role": "user", "content": user_msg})
+                if assistant_msg:
+                    messages.append({"role": "assistant", "content": assistant_msg})
+        messages.append({"role": "user", "content": user_message})
+
+        # Make sure that the tool calls don't exceed MAX_TOOL_ROUNDS to prevent infinite loops
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = _client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="auto",
+            )
+            assistant_message = response.choices[0].message
+
+            # Branch (a): no tool calls → final answer
+            if not assistant_message.tool_calls:
+                return assistant_message.content or FALLBACK_MESSAGE
+
+            # Tool calls requested: append assistant message FIRST (spec line 94)
+            messages.append(assistant_message)
+
+            # Execute each tool call, append results as role="tool"
+            for tool_call in assistant_message.tool_calls:
+                # Arguments may be "", "null", or missing for no-arg tools —
+                # coalesce to an empty dict so dispatch_tool always gets a dict.
+                tool_args = json.loads(tool_call.function.arguments or "{}") or {}
+                tool_result = dispatch_tool(tool_call.function.name, tool_args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,   # already a JSON string from dispatch_tool
+                })
+            # loop continues: call the LLM again with the appended tool results
+
+        # Branch (b): loop exhausted (MAX_TOOL_ROUNDS reached) without a final answer
+        return FALLBACK_MESSAGE
+
+    except Exception as e:
+        # Never raise into Gradio — the contract requires a user-readable string.
+        print(f"  ✗ Agent error: {e}")
+        return FALLBACK_MESSAGE
+
